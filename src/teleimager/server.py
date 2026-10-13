@@ -835,6 +835,14 @@ class CameraFinder:
         return ("GStreamerCamera (%d found)   [type: gstreamer]" % len(cams), cams)
 
 class BaseCamera:
+    # Hardware reads (V4L2 DQBUF, libuvc frame poll, GStreamer appsink pull,
+    # RealSense wait_for_frames) block until the driver has a frame, so the
+    # capture loop must NOT pace them again: an extra per-frame sleep freezes
+    # any backlog the driver queued during a stall (the loop can never drain
+    # it faster than real time). Shared-memory reads return immediately and
+    # still need explicit pacing — see IsaacSimCamera.
+    _capture_requires_pacing = False
+
     def __init__(self, cam_topic, server_cfg):
         self._ready = threading.Event()
         self._cam_topic = cam_topic
@@ -1948,6 +1956,10 @@ class GStreamerCamera(BaseCamera):
         return cls(cam_topic, gst_pipeline, server_cfg)
 
 class IsaacSimCamera(BaseCamera):
+    # Shared-memory reads return immediately, so they must be paced to the
+    # configured FPS (unlike the blocking hardware backends).
+    _capture_requires_pacing = True
+
     def __init__(self, cam_topic, server_cfg, image_source="head"):
         """
         IsaacSim camera that reads from shared memory.
@@ -2089,7 +2101,10 @@ class TeleImageServer:
 
     def _update_frames(self, cam_topic: str, camera: BaseCamera):
         try:
-            interval = 1.0 / camera.get_fps()
+            # interval == 0 means "read as fast as the driver delivers": hardware
+            # reads already block on the next frame, and letting them run free
+            # drains any backlog queued during a stall instead of freezing it.
+            interval = 1.0 / camera.get_fps() if camera._capture_requires_pacing else 0.0
             next_frame_time = time.monotonic()
             while not self._stop_event.is_set():
                 try:
@@ -2098,10 +2113,14 @@ class TeleImageServer:
                     logger_mp.error(f"[Teleimager] Error updating frame for {cam_topic} camera")
                     self._stop_event.set()
                     break
+                if not interval:
+                    # Unpaced: the driver's read blocks until a frame is available,
+                    # so any backlog queued during a stall drains at full speed.
+                    continue
                 next_frame_time += interval
                 sleep_time = next_frame_time - time.monotonic()
                 if sleep_time > 0:
-                    time.sleep(sleep_time)
+                    self._stop_event.wait(sleep_time)
                 else:
                     next_frame_time = time.monotonic()
         except Exception as e:
