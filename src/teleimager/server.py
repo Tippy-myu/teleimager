@@ -39,6 +39,7 @@ import threading
 import signal
 import functools
 import re
+import shutil
 import subprocess
 import platform
 from .client import TripleRingBuffer, ZMQ_PublisherManager, ZMQ_Responser
@@ -795,6 +796,12 @@ class CameraFinder:
         return ("UVCCamera (%d found)   [type: uvc]" % len(cams), cams)
 
     def _report_v4l2(self, cards):
+        # The scan drives `v4l2-ctl`; when it is absent every node is skipped and
+        # "(0 found)" would read as "no camera plugged in". Report it as a child
+        # node so the reason sits next to the count instead of inside it.
+        if not shutil.which("v4l2-ctl"):
+            return ("V4L2Camera (0 found)   [type: v4l2]",
+                    [self._leaf("⚠️  v4l2-ctl not installed, run: sudo apt install -y v4l-utils")])
         cams = []
         for c in cards:
             fields = [
