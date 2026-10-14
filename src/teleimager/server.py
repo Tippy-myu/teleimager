@@ -38,9 +38,12 @@ import time
 import threading
 import signal
 import functools
+import grp
+import pwd
 import re
 import shutil
 import subprocess
+import tempfile
 import platform
 from .client import TripleRingBuffer, ZMQ_PublisherManager, ZMQ_Responser
 # Shared JPEG codec (libturbojpeg): encode(BGR)->jpeg bytes, decode(jpeg)->BGR.
@@ -656,17 +659,205 @@ class WebRTC_PublisherManager:
                 except Exception: pass
             self._publisher_threads.clear()
 
+_SETUP_CMD = 'sudo "$(which teleimager-server)" --setup-permissions'
+# The command users are told to run for camera access.
+# Not a bare `sudo teleimager-server ...`: sudo replaces PATH with secure_path,
+# which does not contain the conda environment the entry point lives in, and
+# sudo then reports "command not found". Resolving the path first keeps the
+# conda interpreter and its dependencies intact under root.
+
+
 # ========================================================
 # UVC driver reload
 # ========================================================
 def reload_uvcvideo_module():
+    """Reset the UVC driver so a stale device state cannot carry over.
+
+    Worth doing on every start: after a crash or a replug libuvc may not have
+    reattached the kernel driver, and the camera is then stuck half-open.
+
+    No module parameter is passed. `debug=0` used to be, but uvcvideo has no
+    such parameter (the real one is `trace`, which already defaults to 0), so
+    the kernel logged "unknown parameter 'debug' ignored" on every start.
+
+    The unload is best-effort: it fails while something still holds the device,
+    and in that case re-loading is both unnecessary and harmless to skip -- but
+    the load below must still run, otherwise a successful unload would leave
+    the machine with no driver at all.
+    """
+    # Already root (the systemd service from setup_autostart.sh runs as root):
+    # privilege escalation is unnecessary, and a sudoers entry may not exist.
+    sudo = [] if os.geteuid() == 0 else ["sudo"]
     try:
-        subprocess.run("sudo modprobe -r uvcvideo", shell=True, check=True)
-        subprocess.run("sudo modprobe uvcvideo debug=0", shell=True, check=True)
-        subprocess.run("sudo udevadm settle", shell=True, check=True)
-        logger_mp.info("[Teleimager] UVC driver reloaded successfully.")
-    except subprocess.CalledProcessError as e:
+        # -n for non-interactive: without it, a user who has not run
+        # --setup-permissions gets a password prompt on a tty, and a silent
+        # hang on a tty-less start (systemd, CI). With it, the missing entry
+        # fails immediately into the message below.
+        subprocess.run([*sudo, "modprobe", "-r", "uvcvideo"], timeout=30)
+        subprocess.run([*sudo, "modprobe", "uvcvideo"], check=True, timeout=30)
+        # No sudo: settle only waits for the event queue to drain, and keeping
+        # it unprivileged means the sudoers entry stays down to modprobe.
+        subprocess.run(["udevadm", "settle"], timeout=30)
+        logger_mp.info("[Teleimager] UVC driver reloaded.")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
         logger_mp.error(f"[Teleimager] Failed to reload driver: {e}")
+        logger_mp.error("[Teleimager] Grant it once with:\n    " + _SETUP_CMD)
+
+
+# ========================================================
+# host permissions (one-shot, run as root)
+# ========================================================
+# The two backends reach the hardware through different nodes and the distro
+# treats them very differently:
+#   /dev/video*        GROUP="video" + a uaccess tag, so a desktop session gets
+#                      an ACL for free -> V4L2 works out of the box.
+#   /dev/bus/usb/*/*   MODE="0664" with no group, and 70-uaccess.rules only tags
+#                      HID devices (060101), never video class (0e01xx) -> the
+#                      node stays root-owned and libusb_open() returns EACCES.
+# libuvc (the "uvc" backend) goes through usbfs, which is why it is the one
+# that breaks.
+_UDEV_RULE_PATH = "/etc/udev/rules.d/70-teleimager.rules"
+# The 70- prefix matters: 73-seat-late.rules is where RUN{builtin}+="uaccess"
+# applies the ACL, so the tag must be set before it. 0e01?? rather than 0e0100
+# because udev uses shell globs ("?" = any single char, man 7 udev) and UVC 1.5
+# devices report protocol 01. Both GROUP= and TAG+= are set on purpose: uaccess
+# covers the desktop session immediately, the group is the fallback for SSH /
+# headless, which have no seat.
+_UDEV_RULE = ('SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", '
+              'ENV{ID_USB_INTERFACES}=="*:0e01??:*", '
+              'GROUP="video", MODE="0660", TAG+="uaccess"\n')
+# Must be 0440 and owned by root, or sudo refuses to read the directory.
+_SUDOERS_PATH = "/etc/sudoers.d/uvc_modprobe"
+
+
+def _run(argv, required=True):
+    """Run a host command; report failure instead of silently carrying on.
+
+    `required=False` is for steps that are allowed to fail on a stripped-down
+    image (a missing group, no modprobe) without making the whole setup look
+    like it worked.
+    """
+    try:
+        subprocess.run(argv, check=required, timeout=30)
+        return True
+    except FileNotFoundError:
+        logger_mp.error(f"[Teleimager] {argv[0]} not found; skipping: {' '.join(argv)}")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        logger_mp.error(f"[Teleimager] {' '.join(argv)} failed: {e}")
+    return False
+
+
+def setup_permissions(requested_user=None):
+    """Grant a normal user access to the cameras. Run once, as root.
+
+    Installs the udev rule above, adds the invoking user to 'video', and grants
+    the passwordless modprobe that reload_uvcvideo_module() needs.
+    """
+    if os.geteuid() != 0:
+        logger_mp.error("[Teleimager] This writes to /etc/udev and /etc/sudoers.d, "
+                        "so it needs root:\n    " + _SETUP_CMD)
+        return 1
+
+    # The human behind the sudo, not root. Resolved in order:
+    #   --user > $SUDO_USER > give up.
+    # There is deliberately no fallback to "ALL": that would hand the
+    # passwordless modprobe to every account on the machine, which is a lot
+    # more than the one user who asked for camera access. The case that lands
+    # here is `sudo su -` / a bare root shell, where nothing records who the
+    # human was -- so ask, rather than guess.
+    user = requested_user or os.environ.get("SUDO_USER") or None
+    if user == "root":
+        user = None
+    if not user:
+        logger_mp.error("[Teleimager] Cannot tell which user should get camera "
+                        "access (no $SUDO_USER; did you `sudo su -`?).\n"
+                        "    Re-run as that user:  " + _SETUP_CMD + "\n"
+                        "    or name them explicitly:  " + _SETUP_CMD + " --user <name>")
+        return 1
+    try:
+        pwd.getpwnam(user)
+    except KeyError:
+        logger_mp.error(f"[Teleimager] No such user: {user}")
+        return 1
+
+    try:
+        with open(_UDEV_RULE_PATH, "w") as f:
+            f.write(_UDEV_RULE)
+        os.chmod(_UDEV_RULE_PATH, 0o644)
+        logger_mp.info(f"[Teleimager] Installed {_UDEV_RULE_PATH}")
+    except OSError as e:
+        logger_mp.error(f"[Teleimager] Cannot write {_UDEV_RULE_PATH}: {e}")
+        return 1
+
+    # Rules only apply to new events, so already-plugged cameras need a
+    # synthetic 'change' to pick up the ACL without a replug.
+    _run(["udevadm", "control", "--reload-rules"])
+    _run(["udevadm", "trigger", "--subsystem-match=usb", "--action=change"])
+
+    needs_relogin = False
+    if user:
+        try:
+            grp.getgrnam("video")
+        except KeyError:
+            # uaccess still covers a desktop session; only the SSH/headless
+            # fallback is lost, so this is a warning rather than a failure.
+            logger_mp.warning("[Teleimager] No 'video' group on this system; "
+                              "desktop sessions still work via uaccess.")
+        else:
+            if user in grp.getgrnam("video").gr_mem:
+                logger_mp.info(f"[Teleimager] {user} is already in the 'video' group.")
+            elif _run(["usermod", "-aG", "video", user]):
+                needs_relogin = True
+
+    # sudo matches the whole command line, so this must stay in sync with
+    # reload_uvcvideo_module() above. Validate before installing: a malformed
+    # file in /etc/sudoers.d/ locks sudo out of the machine.
+    modprobe = shutil.which("modprobe") or "/usr/sbin/modprobe"
+    rule = ("# Teleimager: reload the UVC driver without a password.\n"
+            "%s ALL=(ALL) NOPASSWD: %s -r uvcvideo, %s uvcvideo\n"
+            % (user, modprobe, modprobe))
+    # tempfile puts this in /tmp rather than in the udev rules dir, where an
+    # abandoned file would be parsed as a rule on every reload.
+    try:
+        fd, tmp = tempfile.mkstemp(prefix="teleimager-sudoers-")
+    except OSError as e:
+        logger_mp.error(f"[Teleimager] Cannot create a temp file: {e}")
+        return 1
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(rule)
+        check = subprocess.run(["visudo", "-c", "-f", tmp],
+                               capture_output=True, text=True)
+        if check.returncode != 0:
+            out = (check.stdout or check.stderr or "").strip()[:500]
+            logger_mp.error("[Teleimager] Generated sudoers entry is invalid, "
+                            "not installing it:\n" + out)
+            return 1
+        shutil.copyfile(tmp, _SUDOERS_PATH)
+        os.chmod(_SUDOERS_PATH, 0o440)
+        logger_mp.info(f"[Teleimager] Installed {_SUDOERS_PATH}")
+    except OSError as e:
+        logger_mp.error(f"[Teleimager] Cannot install the sudoers entry: {e}")
+        return 1
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+    logger_mp.info("[Teleimager] Done.")
+    logger_mp.info("[Teleimager] Desktop sessions: UVC works now, nothing to restart.")
+    if needs_relogin:
+        # usermod only edits /etc/group; a process keeps the group set it was
+        # started with. sshd reads the group list fresh on every login, so an
+        # SSH reconnect is enough -- but a terminal started from the desktop
+        # inherits the already-running user manager's stale set, so that one
+        # needs a logout (or reboot).
+        logger_mp.info("[Teleimager] SSH: reconnect ('sshd' re-reads groups per "
+                       "login).  Desktop terminal: log out and back in.")
+    logger_mp.info("[Teleimager] Verify with:  teleimager-server --cf --uvc")
+    return 0
+
 
 # ========================================================
 # camera finder and cameras
@@ -789,8 +980,18 @@ class CameraFinder:
                     mode_kids.append(self._leaf("%dx%d @ [%s]" % (w, h, fps_str)))
                 fmt_str = ", ".join(sorted(fmt_names))
                 fields.append(("modes (%s)  [width x height @ fps]:" % fmt_str, mode_kids))
-            except Exception:
-                pass
+            except Exception as e:
+                # scan() is pure sysfs and never opens the device, so the card
+                # renders either way -- without this the only symptom is a
+                # missing "modes" line, which reads as "this camera has no
+                # resolutions" instead of "libuvc could not open it".
+                # libuvc goes through /dev/bus/usb/..., which gets no logind ACL:
+                # 70-uaccess.rules only tags HID (060101), not video (0e01xx).
+                if "denied" in str(e).lower():
+                    fields.append(self._leaf(
+                        "⚠️  modes unavailable: USB access denied, run: " + _SETUP_CMD))
+                else:
+                    fields.append(self._leaf("⚠️  modes unavailable: %s" % e))
 
             cams.append(("📷 %s (%s)" % (name, mfr), fields))
         return ("UVCCamera (%d found)   [type: uvc]" % len(cams), cams)
@@ -2318,6 +2519,8 @@ def main():
         epilog=guide,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument('--setup-permissions', action='store_true', help='Grant camera access to non-root users (run once with sudo), then exit. Installs a udev rule, adds you to the video group, and allows the driver reload without a password.')
+    parser.add_argument('--user', default=None, metavar='USER', help='(with --setup-permissions) Grant access to a specific user instead of $SUDO_USER. Required if run as `sudo su -` with no way to know who the invoker was.')
     parser.add_argument('--cf', action='store_true', help='Camera-finder mode: scan and print all connected cameras, then exit.')
     parser.add_argument('--uvc', action='store_true', help='In --cf, include the UVC (libuvc -> pyuvc) backend in the scan.')
     parser.add_argument('--v4l2', action='store_true', help='In --cf, include the V4L2 (PyAV) backend in the scan.')
@@ -2329,6 +2532,11 @@ def main():
     parser.add_argument('--cert', default=None, metavar='PATH', help='Path to the TLS certificate (overrides the default ~/.config/teleimager/cert.pem).')
     parser.add_argument('--key', default=None, metavar='PATH', help='Path to the TLS private key (overrides the default ~/.config/teleimager/key.pem).')
     args = parser.parse_args()
+
+    # One-shot host setup; touches only /etc, so it runs before anything that
+    # reads the server config or pins CPU affinity.
+    if args.setup_permissions:
+        sys.exit(setup_permissions(args.user))
 
     global CERT_PEM_PATH, KEY_PEM_PATH
     # --cert / --key override the defaults alongside the server yaml.

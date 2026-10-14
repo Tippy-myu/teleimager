@@ -99,8 +99,8 @@ conda activate teleimager
 
 | 后端（摄像头驱动） | pip 选项 | 说明 |
 |------|---------|------|
-| 基座（V4L2） | `[server]` | 始终包含，无需额外选项 |
-| + UVC | `[uvc]` | 需 USB 权限——执行 [setup_uvc.sh](https://github.com/unitreerobotics/teleimager/blob/main/setup_uvc.sh)；wheel 已自带 `libturbojpeg`、`libusb`，无需 apt |
+| 基座（V4L2） | `[server]` | 需要 `v4l2-ctl`：`sudo apt install -y v4l-utils` |
+| + UVC | `[uvc]` | 需 USB 权限——安装后执行一次 `sudo "$(which teleimager-server)" --setup-permissions`；wheel 已自带 `libturbojpeg`、`libusb`，无需 apt |
 | + RealSense | `[realsense]` |  |
 | + 全部（不含 GStreamer） | `[all]` | 等价于 UVC + RealSense |
 | + GStreamer | 无 pip 包 | `sudo apt install python3-gi python3-gst-1.0 gstreamer1.0-plugins-{base,good,bad}` |
@@ -110,7 +110,7 @@ conda activate teleimager
 选好后端（把下面的 `[server]` 换成对应选项），二选一执行安装：
 
 ```bash
-# 方式一：从源码（推荐）——顺带获得辅助脚本 setup_uvc.sh / setup_autostart.sh 与 WebRTC 资源
+# 方式一：从源码（推荐）——顺带获得辅助脚本 setup_autostart.sh 与 WebRTC 资源
 git clone https://github.com/unitreerobotics/teleimager.git
 cd teleimager
 pip install -e ".[server]"        # 如 ".[uvc]"、".[all]"
@@ -118,6 +118,31 @@ pip install -e ".[server]"        # 如 ".[uvc]"、".[all]"
 # 方式二：从 PyPI（不需要辅助脚本时）
 pip install "teleimager[server]"  # 如 "teleimager[uvc]"、"teleimager[all]"
 ```
+
+#### 1.3.3 授予相机访问权限（仅 UVC 需要）
+
+V4L2 开箱即用：`/dev/video*` 带 `uaccess` 标签，桌面会话会自动获得 ACL。
+UVC 则不然——libuvc 走的是 `/dev/bus/usb/...`，而系统自带的 udev 规则只给
+HID 设备发 ACL，从不覆盖视频类设备。该节点因此保持 root 所有，
+`libusb_open()` 返回 `Access denied`。
+
+执行一次即可（安装 udev 规则、加入 `video` 组、授予驱动重载所需的免密
+`modprobe`）：
+
+```bash
+sudo "$(which teleimager-server)" --setup-permissions
+```
+
+必须写成 `"$(which ...)"`：`sudo` 会把 `PATH` 换成自己的 `secure_path`
+（`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin`），
+里面不含 conda 环境，直接 `sudo teleimager-server` 会报 "command not found"。
+
+桌面会话执行完即可启动服务端。SSH 或无头设备没有 logind seat，只能靠
+`video` 组授权。组成员身份在登录时就已确定，按场景选择生效方式：
+
+- **SSH** —— 重新连接即可。`sshd` 每次登录都会重新读取组列表。
+- **桌面终端** —— 注销后重新登录，或重启。从桌面打开的终端会继承用户管理器的
+  组信息，而该管理器在你执行安装时就已经在运行了。
 
 #### 1.3.3 配置 TLS 证书（仅 WebRTC）
 

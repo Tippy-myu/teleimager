@@ -99,8 +99,8 @@ A *backend* is the capture driver TeleImager uses to talk to a camera. They're l
 
 | Backend (camera driver) | pip extra | Notes |
 |---------|-----------|-------|
-| Base (V4L2) | `[server]` | Always included, no extra needed |
-| + UVC | `[uvc]` | Needs USB access — run [setup_uvc.sh](https://github.com/unitreerobotics/teleimager/blob/main/setup_uvc.sh); the wheel already bundles `libturbojpeg` and `libusb`, no apt needed |
+| Base (V4L2) | `[server]` | Needs `v4l2-ctl`: `sudo apt install -y v4l-utils` |
+| + UVC | `[uvc]` | Needs USB access — run `sudo "$(which teleimager-server)" --setup-permissions` once; the wheel already bundles `libturbojpeg` and `libusb`, no apt needed |
 | + RealSense | `[realsense]` |  |
 | + Everything (except GStreamer) | `[all]` | Equivalent to UVC + RealSense |
 | + GStreamer | no pip package | `sudo apt install python3-gi python3-gst-1.0 gstreamer1.0-plugins-{base,good,bad}` |
@@ -110,7 +110,7 @@ A *backend* is the capture driver TeleImager uses to talk to a camera. They're l
 Pick your backend (swap the `[server]` below for the matching extra), then choose one of two ways to install:
 
 ```bash
-# Option 1 — from source (recommended): also gets the helper scripts setup_uvc.sh / setup_autostart.sh and WebRTC assets
+# Option 1 — from source (recommended): also gets setup_autostart.sh and WebRTC assets
 git clone https://github.com/unitreerobotics/teleimager.git
 cd teleimager
 pip install -e ".[server]"        # e.g. ".[uvc]", ".[all]"
@@ -118,6 +118,35 @@ pip install -e ".[server]"        # e.g. ".[uvc]", ".[all]"
 # Option 2 — from PyPI (when you don't need the helper scripts)
 pip install "teleimager[server]"  # e.g. "teleimager[uvc]", "teleimager[all]"
 ```
+
+#### 1.3.3 Grant camera access (UVC only)
+
+V4L2 works out of the box: `/dev/video*` is tagged for `uaccess`, so a desktop
+session gets an ACL automatically. UVC does not — libuvc talks to
+`/dev/bus/usb/...`, and the stock udev rules only hand out ACLs for HID
+devices, never for the video class. The node therefore stays root-owned and
+`libusb_open()` fails with `Access denied`.
+
+Run this once (it installs a udev rule, adds you to `video`, and grants the
+passwordless `modprobe` the driver reload needs):
+
+```bash
+sudo "$(which teleimager-server)" --setup-permissions
+```
+
+The `"$(which ...)"` is needed: `sudo` replaces `PATH` with its `secure_path`
+(`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin`),
+which does not contain a conda environment, so a bare `sudo teleimager-server`
+fails with "command not found".
+
+A desktop session can start the server right away. Over SSH or on a headless
+box there is no logind seat, so the `video` group is what grants access. Group
+membership is fixed at login time, so pick the right way to apply it:
+
+- **SSH** — reconnect. `sshd` reads the group list fresh on every login.
+- **Desktop terminal** — log out and back in. A terminal started from the desktop
+  inherits the group set of the user manager, which was already running when you
+  ran the setup.
 
 #### 1.3.3 Configure TLS certificates (WebRTC only)
 
