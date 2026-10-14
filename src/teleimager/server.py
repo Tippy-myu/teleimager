@@ -863,8 +863,6 @@ class CameraFinder:
         self.enable_gstreamer = enable_gstreamer
         self.enable_realsense = enable_realsense
         self.report()
-        if not any([enable_uvc, enable_v4l2, enable_gstreamer, enable_realsense]):
-            logger_mp.warning("[Teleimager] 🖼️ No camera backends enabled.")
 
     def report(self):
         if self.enable_uvc or self.enable_v4l2 or self.enable_gstreamer:
@@ -890,7 +888,13 @@ class CameraFinder:
 
         logger_mp.info("[Teleimager] 🎯 Camera Finder Report")
         self._print_children(branches, "")
-        logger_mp.info("[Teleimager] 👉 Use the results above to edit your server config yaml.")
+        if any([self.enable_uvc, self.enable_v4l2, self.enable_gstreamer, self.enable_realsense]):
+            logger_mp.info("[Teleimager] 👉 Use the results above to edit your server config yaml.")
+        else:
+            logger_mp.warning("[Teleimager] 🖼️ No camera backends enabled — nothing to scan.")
+            logger_mp.info("[Teleimager] 👉 Add one flag per camera type you want to scan:")
+            logger_mp.info("[Teleimager]      teleimager-server --cf --uvc --v4l2 --gst --rs")
+            logger_mp.info("[Teleimager]      --uvc (USB UVC)   --v4l2 (V4L2)   --gst (GStreamer)   --rs (RealSense)")
 
     @staticmethod
     def _print_children(children, prefix):
@@ -1405,9 +1409,12 @@ class UVCCamera(BaseCamera):
             return uvc
         except ImportError:
             msg = (
-                "[UVC] pupil-labs-uvc (import name 'uvc') not installed.  You can try:\n"
-                "    sudo apt install -y libusb-1.0-0-dev libturbojpeg-dev\n"
-                "    pip install \"teleimager[uvc]\"\n"
+                "[UVC] pupil-labs-uvc (import name 'uvc') not installed.\n"
+                f"  Interpreter: {sys.executable}\n"
+                "  [1/2] System libraries pyuvc links against (before a source build):\n"
+                "      sudo apt install -y libusb-1.0-0-dev libturbojpeg-dev\n"
+                "  [2/2] The Python binding, from PyPI:\n"
+                "      pip install \"teleimager[uvc]\"\n"
             )
             logger_mp.error(msg)
             sys.exit(1)
@@ -2009,24 +2016,26 @@ class GStreamerCamera(BaseCamera):
             if "Namespace" in str(e):
                 # The distro typelib dirs were added above, so Gst is genuinely absent.
                 logger_mp.error(
-                    f"GStreamer typelibs missing ({e}). Install them:\n"
-                    "    sudo apt install gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0"
+                    f"GStreamer typelibs missing ({e}).\n"
+                    "  Install them system-wide:\n"
+                    "      sudo apt install gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0"
                 )
             else:
                 # PyGObject must match the interpreter: conda ships its own, apt's serves the distro python.
                 if os.path.exists(os.path.join(sys.prefix, "conda-meta")):
-                    binding = "conda install -c conda-forge pygobject"
+                    install = "      conda install -c conda-forge pygobject\n"
                 elif any(p.endswith("/dist-packages") for p in sys.path):
-                    binding = "sudo apt install python3-gi"
+                    install = "      sudo apt install python3-gi\n"
                 else:
-                    binding = ("pip install PyGObject  (compiles: needs build-essential "
-                               "+ libgirepository/libcairo dev headers)")
+                    install = ("      pip install PyGObject\n"
+                               "      (source build also needs: sudo apt install libgirepository1.0-dev libcairo2-dev)\n")
                 logger_mp.error(
                     f"PyGObject/GStreamer not installed ({e}).\n"
-                    f"    PyGObject for this interpreter:  {binding}\n"
-                    "    GStreamer typelibs + plugins (system-wide, needed either way):\n"
-                    "        sudo apt install gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 "
-                    "gstreamer1.0-plugins-{base,good,bad}"
+                    f"  Interpreter: {sys.executable}\n"
+                    "  [1/2] PyGObject — the Python binding, this interpreter only:\n"
+                    f"{install}"
+                    "  [2/2] GStreamer — typelibs + plugins, system-wide (always needed):\n"
+                    "      sudo apt install gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 gstreamer1.0-plugins-{base,good,bad}"
                 )
             sys.exit(1)
 
