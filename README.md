@@ -103,7 +103,16 @@ A *backend* is the capture driver TeleImager uses to talk to a camera. They're l
 | + UVC | `[uvc]` | Needs USB access — run `sudo "$(which teleimager-server)" --setup-permissions` once; the wheel already bundles `libturbojpeg` and `libusb`, no apt needed |
 | + RealSense | `[realsense]` |  |
 | + Everything (except GStreamer) | `[all]` | Equivalent to UVC + RealSense |
-| + GStreamer | no pip package | `sudo apt install python3-gi python3-gst-1.0 gstreamer1.0-plugins-{base,good,bad}` |
+| + GStreamer | no pip package | PyGObject + system plugins — see the note under this table |
+
+> `type: gstreamer` is the one backend with no pip extra: PyGObject must match your interpreter, GStreamer comes from the system.
+>
+> ```bash
+> conda install -c conda-forge pygobject   # the env from 1.1 — apt's python3-gi serves the system python instead
+> sudo apt install gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+> ```
+>
+> Add `gstreamer1.0-libav` if your pipeline decodes H.264/H.265 (`avdec_h264`), and `gstreamer1.0-plugins-bad` for hardware decoders; `v4l2src` and MJPG-over-RTP need only base + good. Confirm with `python -c "import gi; gi.require_version('Gst','1.0'); from gi.repository import Gst; print(Gst.version_string())"`.
 
 #### 1.3.2 Install
 
@@ -121,32 +130,13 @@ pip install "teleimager[server]"  # e.g. "teleimager[uvc]", "teleimager[all]"
 
 #### 1.3.3 Grant camera access (UVC only)
 
-V4L2 works out of the box: `/dev/video*` is tagged for `uaccess`, so a desktop
-session gets an ACL automatically. UVC does not — libuvc talks to
-`/dev/bus/usb/...`, and the stock udev rules only hand out ACLs for HID
-devices, never for the video class. The node therefore stays root-owned and
-`libusb_open()` fails with `Access denied`.
-
-Run this once (it installs a udev rule, adds you to `video`, and grants the
-passwordless `modprobe` the driver reload needs):
+V4L2 works out of the box: `/dev/video*` gets a logind ACL. USB video class does not — its node stays root-owned, so `libusb_open()` on `/dev/bus/usb/...` fails with EACCES. Run once (it writes a udev rule and a sudoers entry, and adds you to `video`):
 
 ```bash
-sudo "$(which teleimager-server)" --setup-permissions
+sudo "$(which teleimager-server)" --setup-permissions   # $(which ...) survives sudo's secure_path
 ```
 
-The `"$(which ...)"` is needed: `sudo` replaces `PATH` with its `secure_path`
-(`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin`),
-which does not contain a conda environment, so a bare `sudo teleimager-server`
-fails with "command not found".
-
-A desktop session can start the server right away. Over SSH or on a headless
-box there is no logind seat, so the `video` group is what grants access. Group
-membership is fixed at login time, so pick the right way to apply it:
-
-- **SSH** — reconnect. `sshd` reads the group list fresh on every login.
-- **Desktop terminal** — log out and back in. A terminal started from the desktop
-  inherits the group set of the user manager, which was already running when you
-  ran the setup.
+Skip it and the server says so when it starts, printing the same command. Afterwards SSH needs a reconnect and a desktop terminal a fresh login.
 
 #### 1.3.3 Configure TLS certificates (WebRTC only)
 

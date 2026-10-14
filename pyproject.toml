@@ -54,7 +54,9 @@ server = [
 # execute: pip install -e ".[uvc]"  /  ".[realsense]"  /  ".[all]"
 uvc = ["teleimager[server]", "pupil-labs-uvc"]
 realsense = ["teleimager[server]", "pyrealsense2"]
-# gstreamer relies on system PyGObject (apt install python3-gi + gstreamer); no pip dep.
+# gstreamer has no pip dep: PyGObject must match the interpreter running teleimager
+# (conda: conda-forge pygobject; otherwise: apt python3-gi), plus the system GStreamer
+# typelibs and plugins.
 all = ["teleimager[viewer,server,uvc,realsense]"]
 
 [project.urls]

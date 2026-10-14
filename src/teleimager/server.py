@@ -680,7 +680,7 @@ def reload_uvcvideo_module():
     """
     # Already root (the systemd service from setup_autostart.sh runs as root):
     # privilege escalation is unnecessary, and a sudoers entry may not exist.
-    sudo = [] if os.geteuid() == 0 else ["sudo"]
+    sudo = [] if os.geteuid() == 0 else ["sudo", "-n"]
     try:
         # -n for non-interactive: without it, a user who has not run
         # --setup-permissions gets a password prompt on a tty, and a silent
@@ -1387,7 +1387,9 @@ class UVCCamera(BaseCamera):
             self.cap = uvc.Capture(self.uid)
         except Exception as e:
             self.cap = None
-            raise RuntimeError(f"[UVCCamera] Failed to open camera {self._cam_topic}: {e}")
+            raise RuntimeError(
+                f"[UVCCamera] Failed to open camera {self._cam_topic}: {e}\n"
+                '    If this is a permissions problem:  sudo "$(which teleimager-server)" --setup-permissions')
 
         try:
             self.cap.frame_mode = self._choose_mode(self.cap, width=self._img_shape[1], height=self._img_shape[0], fps=self._fps)
@@ -1984,6 +1986,14 @@ class GStreamerCamera(BaseCamera):
 
     @staticmethod
     def get_gstreamer_module():
+        # A conda PyGObject ships glib/gio typelibs but no GStreamer ones, and the
+        # repo reads GI_TYPELIB_PATH only at creation -- so extend it before the import.
+        dirs = (glob.glob("/usr/lib/girepository-1.0")                  # Fedora/Arch, plain
+                + glob.glob("/usr/lib/*linux-gnu*/girepository-1.0"))   # Debian/Ubuntu multiarch
+        have = os.environ.get("GI_TYPELIB_PATH", "").split(":")
+        add = [d for d in dirs if d not in have]
+        if add:
+            os.environ["GI_TYPELIB_PATH"] = ":".join([p for p in have if p] + add)
         try:
             import gi
             gi.require_version("Gst", "1.0")
@@ -1992,11 +2002,28 @@ class GStreamerCamera(BaseCamera):
                 Gst.init(None)
             return Gst
         except Exception as e:
-            logger_mp.error(
-                f"PyGObject/GStreamer not installed ({e}). Install with:\n"
-                "    sudo apt install python3-gi python3-gst-1.0 "
-                "gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad"
-            )
+            if "Namespace" in str(e):
+                # The distro typelib dirs were added above, so Gst is genuinely absent.
+                logger_mp.error(
+                    f"GStreamer typelibs missing ({e}). Install them:\n"
+                    "    sudo apt install gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0"
+                )
+            else:
+                # PyGObject must match the interpreter: conda ships its own, apt's serves the distro python.
+                if os.path.exists(os.path.join(sys.prefix, "conda-meta")):
+                    binding = "conda install -c conda-forge pygobject"
+                elif any(p.endswith("/dist-packages") for p in sys.path):
+                    binding = "sudo apt install python3-gi"
+                else:
+                    binding = ("pip install PyGObject  (compiles: needs build-essential "
+                               "+ libgirepository/libcairo dev headers)")
+                logger_mp.error(
+                    f"PyGObject/GStreamer not installed ({e}).\n"
+                    f"    PyGObject for this interpreter:  {binding}\n"
+                    "    GStreamer typelibs + plugins (system-wide, needed either way):\n"
+                    "        sudo apt install gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 "
+                    "gstreamer1.0-plugins-{base,good,bad}"
+                )
             sys.exit(1)
 
     def _start_pipeline(self, pipeline_str):
@@ -2108,7 +2135,8 @@ class GStreamerCamera(BaseCamera):
         for line in txt.splitlines():
             s = line.strip()
             mname = re.match(r"name\s*:\s*(.+)", s)
-            mdev = re.match(r"device\.path\s*=\s*(/dev/video\d+)", s)
+            # The v4l2 provider prints device.path; a PipeWire-exposed one prints api.v4l2.path.
+            mdev = re.match(r"(?:device\.path|api\.v4l2\.path)\s*=\s*(/dev/video\d+)", s)
             mlaunch = re.search(r"gst-launch-1\.0\s+(.+)", s)
             if mname:
                 name = mname.group(1).strip()
@@ -2134,8 +2162,10 @@ class GStreamerCamera(BaseCamera):
                 if stable_device:
                     if "device=" in launch:
                         launch = re.sub(r"device=\S+", f"device={stable_device}", launch, count=1)
-                    else:
+                    elif re.match(r"^v4l2src\b", launch):
                         launch = re.sub(r"^v4l2src\b", f"v4l2src device={stable_device}", launch)
+                    else:
+                        launch = re.sub(r"^[^!]+", f"v4l2src device={stable_device}", launch, count=1)
                 cards.append({
                     "type": "gstreamer",
                     "name": name,

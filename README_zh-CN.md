@@ -103,7 +103,16 @@ conda activate teleimager
 | + UVC | `[uvc]` | 需 USB 权限——安装后执行一次 `sudo "$(which teleimager-server)" --setup-permissions`；wheel 已自带 `libturbojpeg`、`libusb`，无需 apt |
 | + RealSense | `[realsense]` |  |
 | + 全部（不含 GStreamer） | `[all]` | 等价于 UVC + RealSense |
-| + GStreamer | 无 pip 包 | `sudo apt install python3-gi python3-gst-1.0 gstreamer1.0-plugins-{base,good,bad}` |
+| + GStreamer | 无 pip 包 | PyGObject + 系统插件——见表格下方的引用块 |
+
+> `type: gstreamer` 是唯一没有 pip extra 的后端：PyGObject 必须跟解释器走，GStreamer 本体来自系统。
+>
+> ```bash
+> conda install -c conda-forge pygobject   # 即 1.1 建的 env；apt 的 python3-gi 只服务系统 python
+> sudo apt install gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+> ```
+>
+> pipeline 要解 H.264/H.265 再加 `gstreamer1.0-libav`（`avdec_h264`），要硬件解码加 `gstreamer1.0-plugins-bad`；`v4l2src` 和 MJPG-over-RTP 只要 base + good。用 `python -c "import gi; gi.require_version('Gst','1.0'); from gi.repository import Gst; print(Gst.version_string())"` 确认。
 
 #### 1.3.2 安装
 
@@ -121,28 +130,13 @@ pip install "teleimager[server]"  # 如 "teleimager[uvc]"、"teleimager[all]"
 
 #### 1.3.3 授予相机访问权限（仅 UVC 需要）
 
-V4L2 开箱即用：`/dev/video*` 带 `uaccess` 标签，桌面会话会自动获得 ACL。
-UVC 则不然——libuvc 走的是 `/dev/bus/usb/...`，而系统自带的 udev 规则只给
-HID 设备发 ACL，从不覆盖视频类设备。该节点因此保持 root 所有，
-`libusb_open()` 返回 `Access denied`。
-
-执行一次即可（安装 udev 规则、加入 `video` 组、授予驱动重载所需的免密
-`modprobe`）：
+V4L2 开箱即用（`/dev/video*` 带 logind 给的 ACL）；USB video class 不行——节点保持 root 所有，`libusb_open()` 打开 `/dev/bus/usb/...` 会 EACCES。执行一次即可（它写一条 udev 规则、一条 sudoers 条目，并把你加入 `video` 组）：
 
 ```bash
-sudo "$(which teleimager-server)" --setup-permissions
+sudo "$(which teleimager-server)" --setup-permissions   # $(which ...) 才能在 sudo 的 secure_path 下找到
 ```
 
-必须写成 `"$(which ...)"`：`sudo` 会把 `PATH` 换成自己的 `secure_path`
-（`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin`），
-里面不含 conda 环境，直接 `sudo teleimager-server` 会报 "command not found"。
-
-桌面会话执行完即可启动服务端。SSH 或无头设备没有 logind seat，只能靠
-`video` 组授权。组成员身份在登录时就已确定，按场景选择生效方式：
-
-- **SSH** —— 重新连接即可。`sshd` 每次登录都会重新读取组列表。
-- **桌面终端** —— 注销后重新登录，或重启。从桌面打开的终端会继承用户管理器的
-  组信息，而该管理器在你执行安装时就已经在运行了。
+跳过的话，服务端启动时会提示你并给出同一条命令。执行完之后 SSH 需重连，桌面终端需重新登录。
 
 #### 1.3.3 配置 TLS 证书（仅 WebRTC）
 

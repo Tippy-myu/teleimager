@@ -67,7 +67,7 @@ camera:
     serial_number: null
     # uvc / v4l2 only (USB identifiers)
     physical_path: null
-    bcd_device: "0217"
+    bcd_device: null
     vid_pid: null
     video_id: null
     # gstreamer only
@@ -90,7 +90,7 @@ camera:
 
     # ---- driver-specific keys ----
     # common identifier (uvc / v4l2 / realsense)
-    serial_number: "200901010001"
+    serial_number: null
     # uvc / v4l2 only (USB identifiers)
     physical_path: null
     bcd_device: null
@@ -123,4 +123,4 @@ camera:
     vid_pid: null
     video_id: null
     # gstreamer only
-    gst_pipeline: "v4l2src device=/dev/video0 ! image/jpeg ! appsink name=sink"
+    gst_pipeline: null
