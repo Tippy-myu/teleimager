@@ -659,13 +659,6 @@ class WebRTC_PublisherManager:
                 except Exception: pass
             self._publisher_threads.clear()
 
-_SETUP_CMD = 'sudo "$(which teleimager-server)" --setup-permissions'
-# The command users are told to run for camera access.
-# Not a bare `sudo teleimager-server ...`: sudo replaces PATH with secure_path,
-# which does not contain the conda environment the entry point lives in, and
-# sudo then reports "command not found". Resolving the path first keeps the
-# conda interpreter and its dependencies intact under root.
-
 
 # ========================================================
 # UVC driver reload
@@ -701,7 +694,8 @@ def reload_uvcvideo_module():
         logger_mp.info("[Teleimager] UVC driver reloaded.")
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
         logger_mp.error(f"[Teleimager] Failed to reload driver: {e}")
-        logger_mp.error("[Teleimager] Grant it once with:\n    " + _SETUP_CMD)
+        logger_mp.error('[Teleimager] Grant it once with:\n'
+                        '    sudo "$(which teleimager-server)" --setup-permissions')
 
 
 # ========================================================
@@ -755,30 +749,21 @@ def setup_permissions(requested_user=None):
     """
     if os.geteuid() != 0:
         logger_mp.error("[Teleimager] This writes to /etc/udev and /etc/sudoers.d, "
-                        "so it needs root:\n    " + _SETUP_CMD)
+                        "so it needs root:\n"
+                        '    sudo "$(which teleimager-server)" --setup-permissions')
         return 1
 
-    # The human behind the sudo, not root. Resolved in order:
-    #   --user > $SUDO_USER > give up.
-    # There is deliberately no fallback to "ALL": that would hand the
-    # passwordless modprobe to every account on the machine, which is a lot
-    # more than the one user who asked for camera access. The case that lands
-    # here is `sudo su -` / a bare root shell, where nothing records who the
-    # human was -- so ask, rather than guess.
+    # Whoever ran this under sudo. No "ALL" fallback: that would hand the
+    # passwordless modprobe to every account on the machine.
     user = requested_user or os.environ.get("SUDO_USER") or None
     if user == "root":
         user = None
-    if not user:
-        logger_mp.error("[Teleimager] Cannot tell which user should get camera "
-                        "access (no $SUDO_USER; did you `sudo su -`?).\n"
-                        "    Re-run as that user:  " + _SETUP_CMD + "\n"
-                        "    or name them explicitly:  " + _SETUP_CMD + " --user <name>")
-        return 1
-    try:
-        pwd.getpwnam(user)
-    except KeyError:
-        logger_mp.error(f"[Teleimager] No such user: {user}")
-        return 1
+    if requested_user:
+        try:
+            pwd.getpwnam(requested_user)
+        except KeyError:
+            logger_mp.error(f"[Teleimager] No such user: {requested_user}")
+            return 1
 
     try:
         with open(_UDEV_RULE_PATH, "w") as f:
@@ -808,6 +793,12 @@ def setup_permissions(requested_user=None):
                 logger_mp.info(f"[Teleimager] {user} is already in the 'video' group.")
             elif _run(["usermod", "-aG", "video", user]):
                 needs_relogin = True
+
+    # Root needs no grant of its own; the steps left are all per-account.
+    if not user:
+        logger_mp.info("[Teleimager] Running as root; the udev rule is in place. "
+                       "Pass --user <name> to grant a normal account.")
+        return 0
 
     # sudo matches the whole command line, so this must stay in sync with
     # reload_uvcvideo_module() above. Validate before installing: a malformed
@@ -989,7 +980,8 @@ class CameraFinder:
                 # 70-uaccess.rules only tags HID (060101), not video (0e01xx).
                 if "denied" in str(e).lower():
                     fields.append(self._leaf(
-                        "⚠️  modes unavailable: USB access denied, run: " + _SETUP_CMD))
+                        "⚠️  modes unavailable: USB access denied, run: "
+                        'sudo "$(which teleimager-server)" --setup-permissions'))
                 else:
                     fields.append(self._leaf("⚠️  modes unavailable: %s" % e))
 
@@ -2520,7 +2512,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--setup-permissions', action='store_true', help='Grant camera access to non-root users (run once with sudo), then exit. Installs a udev rule, adds you to the video group, and allows the driver reload without a password.')
-    parser.add_argument('--user', default=None, metavar='USER', help='(with --setup-permissions) Grant access to a specific user instead of $SUDO_USER. Required if run as `sudo su -` with no way to know who the invoker was.')
+    parser.add_argument('--user', default=None, metavar='USER', help='(with --setup-permissions) Grant camera access to this account instead of $SUDO_USER. Needed from a root shell (`sudo su -`), where $SUDO_USER is unset.')
     parser.add_argument('--cf', action='store_true', help='Camera-finder mode: scan and print all connected cameras, then exit.')
     parser.add_argument('--uvc', action='store_true', help='In --cf, include the UVC (libuvc -> pyuvc) backend in the scan.')
     parser.add_argument('--v4l2', action='store_true', help='In --cf, include the V4L2 (PyAV) backend in the scan.')
