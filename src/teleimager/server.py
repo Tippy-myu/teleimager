@@ -1639,6 +1639,10 @@ class V4L2Camera(BaseCamera):
         # JPEG-first: default to MJPG (raw JPEG straight to ZMQ, decode lazily for
         # WebRTC); fall back to YUYV (decode to BGR, re-encode for ZMQ) only when the
         # device offers no MJPG. Captured through PyAV (libav v4l2 demuxer).
+        if not shutil.which("v4l2-ctl"):
+            raise RuntimeError(
+                f"[V4L2Camera] Camera {self._cam_topic}: v4l2-ctl is required to pick the "
+                "pixel format. Install it:  sudo apt install -y v4l-utils")
         info = self._v4l2_device_info(video_path) or {}
         formats = {m["format"] for m in info.get("modes", [])}
         self._passthrough = "MJPG" in formats
