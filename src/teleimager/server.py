@@ -590,6 +590,11 @@ class WebRTC_PublisherThread(threading.Thread):
             except Exception:
                 pass
 
+        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
     def send(self, data: np.ndarray):
         """Send data to the processing thread."""
         # Simple drop-frame logic if queue is full
