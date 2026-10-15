@@ -686,14 +686,16 @@ def reload_uvcvideo_module():
         # --setup-permissions gets a password prompt on a tty, and a silent
         # hang on a tty-less start (systemd, CI). With it, the missing entry
         # fails immediately into the message below.
-        subprocess.run([*sudo, "modprobe", "-r", "uvcvideo"], timeout=30)
-        subprocess.run([*sudo, "modprobe", "uvcvideo"], check=True, timeout=30)
+        subprocess.run([*sudo, "modprobe", "-r", "uvcvideo"], capture_output=True, timeout=30)
+        subprocess.run([*sudo, "modprobe", "uvcvideo"], check=True, capture_output=True, timeout=30)
         # No sudo: settle only waits for the event queue to drain, and keeping
         # it unprivileged means the sudoers entry stays down to modprobe.
-        subprocess.run(["udevadm", "settle"], timeout=30)
+        subprocess.run(["udevadm", "settle"], capture_output=True, timeout=30)
         logger_mp.info("[Teleimager] UVC driver reloaded.")
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
         logger_mp.error(f"[Teleimager] Failed to reload driver: {e}")
+        if isinstance(e, subprocess.CalledProcessError) and e.stderr:
+            logger_mp.error("[Teleimager] " + e.stderr.decode(errors="replace").strip())
         rel = os.uname().release
         if glob.glob(f"/lib/modules/{rel}/**/uvcvideo.ko*", recursive=True):
             logger_mp.error('[Teleimager] Grant it once with:\n'
