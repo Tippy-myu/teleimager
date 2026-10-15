@@ -694,8 +694,17 @@ def reload_uvcvideo_module():
         logger_mp.info("[Teleimager] UVC driver reloaded.")
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
         logger_mp.error(f"[Teleimager] Failed to reload driver: {e}")
-        logger_mp.error('[Teleimager] Grant it once with:\n'
-                        '    sudo "$(which teleimager-server)" --setup-permissions')
+        rel = os.uname().release
+        if glob.glob(f"/lib/modules/{rel}/**/uvcvideo.ko*", recursive=True):
+            logger_mp.error('[Teleimager] Grant it once with:\n'
+                            '    sudo "$(which teleimager-server)" --setup-permissions')
+        else:
+            logger_mp.error(
+                f"[Teleimager] No uvcvideo driver for kernel {rel}, so this machine cannot serve UVC cameras as-is.\n"
+                "    On Debian/Ubuntu it is a separate module package; please install it with:\n"
+                f"      sudo apt install linux-modules-extra-{rel}\n"
+                "    If apt has no candidate for that version, the driver cannot be added to this kernel."
+            )
 
 
 # ========================================================
@@ -888,13 +897,16 @@ class CameraFinder:
 
         logger_mp.info("[Teleimager] 🎯 Camera Finder Report")
         self._print_children(branches, "")
-        if any([self.enable_uvc, self.enable_v4l2, self.enable_gstreamer, self.enable_realsense]):
+        if not any([self.enable_uvc, self.enable_v4l2, self.enable_gstreamer, self.enable_realsense]):
+            logger_mp.warning(
+                "[Teleimager] 🖼️ No camera backends enabled — nothing to scan.  Add one flag per camera type:\n"
+                "    teleimager-server --cf --uvc --v4l2 --gst --rs\n"
+                "    --uvc (USB UVC)  --v4l2 (V4L2)  --gst (GStreamer)  --rs (RealSense)")
+        elif rs_cards or uvc_cards or v4l2_cards or gst_cards:
             logger_mp.info("[Teleimager] 👉 Use the results above to edit your server config yaml.")
         else:
-            logger_mp.warning("[Teleimager] 🖼️ No camera backends enabled — nothing to scan.")
-            logger_mp.info("[Teleimager] 👉 Add one flag per camera type you want to scan:")
-            logger_mp.info("[Teleimager]      teleimager-server --cf --uvc --v4l2 --gst --rs")
-            logger_mp.info("[Teleimager]      --uvc (USB UVC)   --v4l2 (V4L2)   --gst (GStreamer)   --rs (RealSense)")
+            # A backend ran but came back empty, so there is nothing to configure.
+            logger_mp.warning("[Teleimager] 👉 No cameras found — check the camera is connected and the driver is loaded.")
 
     @staticmethod
     def _print_children(children, prefix):
@@ -1409,12 +1421,9 @@ class UVCCamera(BaseCamera):
             return uvc
         except ImportError:
             msg = (
-                "[UVC] pupil-labs-uvc (import name 'uvc') not installed.\n"
-                f"  Interpreter: {sys.executable}\n"
-                "  [1/2] System libraries pyuvc links against (before a source build):\n"
-                "      sudo apt install -y libusb-1.0-0-dev libturbojpeg-dev\n"
-                "  [2/2] The Python binding, from PyPI:\n"
-                "      pip install \"teleimager[uvc]\"\n"
+                f"[UVC] pupil-labs-uvc (import name 'uvc') not installed, for interpreter {sys.executable}.  You can try:\n"
+                "    [1/2] sudo apt install -y libusb-1.0-0-dev libturbojpeg-dev\n"
+                "    [2/2] pip install \"teleimager[uvc]\"\n"
             )
             logger_mp.error(msg)
             sys.exit(1)
@@ -2016,26 +2025,24 @@ class GStreamerCamera(BaseCamera):
             if "Namespace" in str(e):
                 # The distro typelib dirs were added above, so Gst is genuinely absent.
                 logger_mp.error(
-                    f"GStreamer typelibs missing ({e}).\n"
-                    "  Install them system-wide:\n"
-                    "      sudo apt install gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0"
+                    f"GStreamer typelibs missing ({e}).  Install them system-wide:\n"
+                    "    sudo apt install gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0"
                 )
             else:
                 # PyGObject must match the interpreter: conda ships its own, apt's serves the distro python.
                 if os.path.exists(os.path.join(sys.prefix, "conda-meta")):
-                    install = "      conda install -c conda-forge pygobject\n"
+                    install = "        conda install -c conda-forge pygobject\n"
                 elif any(p.endswith("/dist-packages") for p in sys.path):
-                    install = "      sudo apt install python3-gi\n"
+                    install = "        sudo apt install python3-gi\n"
                 else:
-                    install = ("      pip install PyGObject\n"
-                               "      (source build also needs: sudo apt install libgirepository1.0-dev libcairo2-dev)\n")
+                    install = ("        pip install PyGObject\n"
+                               "        (source build also needs: sudo apt install libgirepository1.0-dev libcairo2-dev)\n")
                 logger_mp.error(
-                    f"PyGObject/GStreamer not installed ({e}).\n"
-                    f"  Interpreter: {sys.executable}\n"
-                    "  [1/2] PyGObject — the Python binding, this interpreter only:\n"
+                    f"PyGObject/GStreamer not installed ({e}), for interpreter {sys.executable}.  Both are needed:\n"
+                    "    [1/2] PyGObject — the Python binding, this interpreter only:\n"
                     f"{install}"
-                    "  [2/2] GStreamer — typelibs + plugins, system-wide (always needed):\n"
-                    "      sudo apt install gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 gstreamer1.0-plugins-{base,good,bad}"
+                    "    [2/2] GStreamer — typelibs + plugins, system-wide:\n"
+                    "        sudo apt install gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 gstreamer1.0-plugins-{base,good,bad}"
                 )
             sys.exit(1)
 
