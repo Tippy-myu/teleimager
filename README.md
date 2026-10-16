@@ -1,13 +1,13 @@
 <div align="center">
   <img src="teleimager_logo.png" alt="Teleimager Logo" width="100%">
   <a href="https://www.unitree.com/" target="_blank">
-    <img src="https://www.unitree.com/images/0079f8938336436e955ea3a98c4e1e59.svg" alt="Unitree LOGO" width="15%">
+    <img src="src/teleimager/unitree_logo.svg" alt="Unitree LOGO" width="15%">
   </a>
   <p align="center">
     <a> English </a> | <a href="README_zh-CN.md">中文</a>
   </p>
   <p align="center">
-    <a href="https://github.com/unitreerobotics/xr_teleoperate/wiki" target="_blank"> <img src="https://img.shields.io/badge/GitHub-Wiki-181717?logo=github" alt="Unitree LOGO"></a> <a href="https://discord.gg/ZwcVwxv5rq" target="_blank"><img src="https://img.shields.io/badge/-Discord-5865F2?style=flat&logo=Discord&logoColor=white" alt="Unitree LOGO"> <a href="https://deepwiki.com/unitreerobotics/teleimager"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a> </a>
+    <a href="https://github.com/unitreerobotics/xr_teleoperate/wiki" target="_blank"> <img src="https://img.shields.io/badge/GitHub-Wiki-181717?logo=github" alt="Unitree LOGO"></a> <a href="https://discord.gg/ZwcVwxv5rq" target="_blank"><img src="https://img.shields.io/badge/-Discord-5865F2?style=flat&logo=Discord&logoColor=white" alt="Unitree LOGO"> <a href="https://deepwiki.com/unitreerobotics/teleimager"><img src="https://img.shields.io/badge/Ask-DeepWiki-4B8BBE" alt="Ask DeepWiki"></a> </a>
   </p>
 </div>
 
