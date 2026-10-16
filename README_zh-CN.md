@@ -113,6 +113,10 @@ conda activate teleimager
 > ```
 >
 > pipeline 要解 H.264/H.265 再加 `gstreamer1.0-libav`（`avdec_h264`），要硬件解码加 `gstreamer1.0-plugins-bad`；`v4l2src` 和 MJPG-over-RTP 只要 base + good。用 `python -c "import gi; gi.require_version('Gst','1.0'); from gi.repository import Gst; print(Gst.version_string())"` 确认。
+>
+> **它用来做什么。** 普通 USB 相机用 V4L2 或 UVC 就够了，优先走那两条路。GStreamer 的价值在于接入前两者够不着的相机：嵌入式板上的 GMSL2 / MIPI 模组（如 `nvarguscamerasrc`），以及网络相机（`udpsrc`、RTSP）。这也是该后端接收的是一整条 `gst-launch` pipeline 字符串、而不是设备路径的原因。
+>
+> TeleImager 从 appsink 取出的是 JPEG——ZMQ 发布端原样转发这些编码字节，只有 WebRTC 才需要解码——所以 pipeline 末端必须输出 JPEG：`... ! image/jpeg ! appsink name=sink`。本身已输出 JPEG 的源（`v4l2src` 的 MJPG、JPEG 的 RTP 流）无需额外处理；输出裸数据的源则要在 appsink 前加 `videoconvert ! jpegenc`（或硬件编码器，如 `nvjpegenc`）。
 
 #### 1.3.2 安装
 

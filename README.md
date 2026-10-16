@@ -113,6 +113,10 @@ A *backend* is the capture driver TeleImager uses to talk to a camera. They're l
 > ```
 >
 > Add `gstreamer1.0-libav` if your pipeline decodes H.264/H.265 (`avdec_h264`), and `gstreamer1.0-plugins-bad` for hardware decoders; `v4l2src` and MJPG-over-RTP need only base + good. Confirm with `python -c "import gi; gi.require_version('Gst','1.0'); from gi.repository import Gst; print(Gst.version_string())"`.
+>
+> **What it is for.** An ordinary USB camera is best served by V4L2 or UVC — start there. GStreamer is the way in for cameras those two cannot reach: GMSL2 / MIPI modules on embedded boards (`nvarguscamerasrc` and friends), and network cameras (`udpsrc`, RTSP). That is why this backend takes a whole `gst-launch` pipeline string instead of a device path.
+>
+> TeleImager pulls JPEG out of the appsink — the ZMQ publisher forwards those encoded bytes untouched, and only WebRTC decodes them — so the pipeline must end in JPEG: `... ! image/jpeg ! appsink name=sink`. A source that already emits JPEG (MJPG from `v4l2src`, a JPEG RTP stream) needs nothing more; a raw one needs `videoconvert ! jpegenc` (or a hardware encoder such as `nvjpegenc`) in front of the appsink.
 
 #### 1.3.2 Install
 
