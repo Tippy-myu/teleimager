@@ -683,8 +683,7 @@ def reload_uvcvideo_module():
     the load below must still run, otherwise a successful unload would leave
     the machine with no driver at all.
     """
-    # Already root (the systemd service from setup_autostart.sh runs as root):
-    # privilege escalation is unnecessary, and a sudoers entry may not exist.
+    # Root already has the privilege, and a sudoers entry may not exist.
     sudo = [] if os.geteuid() == 0 else ["sudo", "-n"]
     try:
         # -n for non-interactive: without it, a user who has not run
@@ -717,29 +716,6 @@ def reload_uvcvideo_module():
 # ========================================================
 # host permissions (one-shot, run as root)
 # ========================================================
-# The two backends reach the hardware through different nodes and the distro
-# treats them very differently:
-#   /dev/video*        GROUP="video" + a uaccess tag, so a desktop session gets
-#                      an ACL for free -> V4L2 works out of the box.
-#   /dev/bus/usb/*/*   MODE="0664" with no group, and 70-uaccess.rules only tags
-#                      HID devices (060101), never video class (0e01xx) -> the
-#                      node stays root-owned and libusb_open() returns EACCES.
-# libuvc (the "uvc" backend) goes through usbfs, which is why it is the one
-# that breaks.
-_UDEV_RULE_PATH = "/etc/udev/rules.d/70-teleimager.rules"
-# The 70- prefix matters: 73-seat-late.rules is where RUN{builtin}+="uaccess"
-# applies the ACL, so the tag must be set before it. 0e01?? rather than 0e0100
-# because udev uses shell globs ("?" = any single char, man 7 udev) and UVC 1.5
-# devices report protocol 01. Both GROUP= and TAG+= are set on purpose: uaccess
-# covers the desktop session immediately, the group is the fallback for SSH /
-# headless, which have no seat.
-_UDEV_RULE = ('SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", '
-              'ENV{ID_USB_INTERFACES}=="*:0e01??:*", '
-              'GROUP="video", MODE="0660", TAG+="uaccess"\n')
-# Must be 0440 and owned by root, or sudo refuses to read the directory.
-_SUDOERS_PATH = "/etc/sudoers.d/uvc_modprobe"
-
-
 def _run(argv, required=True):
     """Run a host command; report failure instead of silently carrying on.
 
@@ -760,8 +736,8 @@ def _run(argv, required=True):
 def setup_permissions(requested_user=None):
     """Grant a normal user access to the cameras. Run once, as root.
 
-    Installs the udev rule above, adds the invoking user to 'video', and grants
-    the passwordless modprobe that reload_uvcvideo_module() needs.
+    Installs a udev rule, adds the invoking user to 'video', and grants the
+    passwordless modprobe that reload_uvcvideo_module() needs.
     """
     if os.geteuid() != 0:
         logger_mp.error("[Teleimager] This writes to /etc/udev and /etc/sudoers.d, "
@@ -781,13 +757,32 @@ def setup_permissions(requested_user=None):
             logger_mp.error(f"[Teleimager] No such user: {requested_user}")
             return 1
 
+    # The two backends reach the hardware through different nodes and the distro
+    # treats them very differently:
+    #   /dev/video*        GROUP="video" + a uaccess tag, so a desktop session gets
+    #                      an ACL for free -> V4L2 works out of the box.
+    #   /dev/bus/usb/*/*   MODE="0664" with no group, and 70-uaccess.rules only tags
+    #                      HID devices (060101), never video class (0e01xx) -> the
+    #                      node stays root-owned and libusb_open() returns EACCES.
+    # libuvc (the "uvc" backend) goes through usbfs, which is why it is the one
+    # that breaks.
+    udev_rule_path = "/etc/udev/rules.d/70-teleimager.rules"
+    # The 70- prefix matters: 73-seat-late.rules is where RUN{builtin}+="uaccess"
+    # applies the ACL, so the tag must be set before it. 0e01?? rather than 0e0100
+    # because udev uses shell globs ("?" = any single char, man 7 udev) and UVC 1.5
+    # devices report protocol 01. Both GROUP= and TAG+= are set on purpose: uaccess
+    # covers the desktop session immediately, the group is the fallback for SSH /
+    # headless, which have no seat.
+    udev_rule = ('SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", '
+                 'ENV{ID_USB_INTERFACES}=="*:0e01??:*", '
+                 'GROUP="video", MODE="0660", TAG+="uaccess"\n')
     try:
-        with open(_UDEV_RULE_PATH, "w") as f:
-            f.write(_UDEV_RULE)
-        os.chmod(_UDEV_RULE_PATH, 0o644)
-        logger_mp.info(f"[Teleimager] Installed {_UDEV_RULE_PATH}")
+        with open(udev_rule_path, "w") as f:
+            f.write(udev_rule)
+        os.chmod(udev_rule_path, 0o644)
+        logger_mp.info(f"[Teleimager] Installed {udev_rule_path}")
     except OSError as e:
-        logger_mp.error(f"[Teleimager] Cannot write {_UDEV_RULE_PATH}: {e}")
+        logger_mp.error(f"[Teleimager] Cannot write {udev_rule_path}: {e}")
         return 1
 
     # Rules only apply to new events, so already-plugged cameras need a
@@ -830,6 +825,8 @@ def setup_permissions(requested_user=None):
     except OSError as e:
         logger_mp.error(f"[Teleimager] Cannot create a temp file: {e}")
         return 1
+    # Must be 0440 and owned by root, or sudo refuses to read the directory.
+    sudoers_path = "/etc/sudoers.d/uvc_modprobe"
     try:
         with os.fdopen(fd, "w") as f:
             f.write(rule)
@@ -840,9 +837,9 @@ def setup_permissions(requested_user=None):
             logger_mp.error("[Teleimager] Generated sudoers entry is invalid, "
                             "not installing it:\n" + out)
             return 1
-        shutil.copyfile(tmp, _SUDOERS_PATH)
-        os.chmod(_SUDOERS_PATH, 0o440)
-        logger_mp.info(f"[Teleimager] Installed {_SUDOERS_PATH}")
+        shutil.copyfile(tmp, sudoers_path)
+        os.chmod(sudoers_path, 0o440)
+        logger_mp.info(f"[Teleimager] Installed {sudoers_path}")
     except OSError as e:
         logger_mp.error(f"[Teleimager] Cannot install the sudoers entry: {e}")
         return 1
@@ -863,6 +860,82 @@ def setup_permissions(requested_user=None):
         logger_mp.info("[Teleimager] SSH: reconnect ('sshd' re-reads groups per "
                        "login).  Desktop terminal: log out and back in.")
     logger_mp.info("[Teleimager] Verify with:  teleimager-server --cf --uvc")
+    return 0
+
+
+def setup_service(requested_user=None):
+    """Install and enable a systemd unit that starts this server on boot. Run once, as root.
+
+    The unit pins the interpreter to the one running this command (no conda
+    activate needed) and the service account to the invoking user, so it reads
+    the same ~/.config/teleimager yaml you have already configured.
+    """
+    if os.geteuid() != 0:
+        logger_mp.error("[Teleimager] This writes to /etc/systemd/system, "
+                        "so it needs root:\n"
+                        '    sudo "$(which teleimager-server)" --setup-service')
+        return 1
+    if not shutil.which("systemctl"):
+        logger_mp.error("[Teleimager] systemctl not found; this machine does not run systemd, "
+                        "so there is nothing this flag can install.")
+        return 1
+
+    user = requested_user or os.environ.get("SUDO_USER") or "root"
+    try:
+        pw = pwd.getpwnam(user)
+    except KeyError:
+        logger_mp.error(f"[Teleimager] No such user: {user}")
+        return 1
+
+    # The interpreter running right now is the one with teleimager (and its
+    # camera backends) installed; pointing ExecStart at it sidesteps all the
+    # conda-activate dance the shell script needed.
+    exe = os.path.abspath(sys.executable)
+    pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    unit = (
+        "[Unit]\n"
+        "Description=TeleImager Image Server\n"
+        "After=network.target\n"
+        "\n"
+        "[Service]\n"
+        "Type=simple\n"
+        f"User={user}\n"
+        f"WorkingDirectory={pw.pw_dir}\n"
+        f"ExecStart={exe} -m teleimager.server\n"
+        "Restart=always\n"
+        "RestartSec=5\n"
+        f"Environment=PYTHONPATH={pkg_root}\n"
+        "Environment=PYTHONUNBUFFERED=1\n"
+        "StandardOutput=journal+console\n"
+        "StandardError=journal+console\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n"
+    )
+    unit_path = "/etc/systemd/system/teleimager.service"
+    try:
+        with open(unit_path, "w") as f:
+            f.write(unit)
+        os.chmod(unit_path, 0o644)
+        logger_mp.info(f"[Teleimager] Installed {unit_path}")
+    except OSError as e:
+        logger_mp.error(f"[Teleimager] Cannot write {unit_path}: {e}")
+        return 1
+
+    if not _run(["systemctl", "daemon-reload"]) or not _run(["systemctl", "enable", "--now", "teleimager.service"]):
+        logger_mp.error("[Teleimager] systemctl failed; check 'journalctl -u teleimager.service'.")
+        return 1
+
+    logger_mp.info(f"[Teleimager] teleimager.service enabled and started (runs as {user}).")
+    logger_mp.info("[Teleimager] It serves the config in ~/.config/teleimager/teleimager_server.yaml — edit that, then restart.")
+    logger_mp.info(
+        "[Teleimager] Day-to-day management is all systemctl; the ones that change state need sudo:\n"
+        "    🔍 systemctl status teleimager.service       # is it running, plus recent log lines\n"
+        "    📜 journalctl -u teleimager.service -f       # follow the live log\n"
+        "    🔄 sudo systemctl restart teleimager.service # apply edits to the yaml\n"
+        "    🛑 sudo systemctl stop teleimager.service    # stop it now, still starts at boot\n"
+        "    🚫 sudo systemctl disable teleimager.service # stop starting it at boot"
+    )
     return 0
 
 
@@ -2540,6 +2613,9 @@ def main():
     flag = lambda s: C(s, "33")     # yellow     — flags / params
     dim  = lambda s: C(s, "2")      # dim        — notes / hints
     url  = lambda s: C(s, "4;34")   # underline blue — links
+    # $(which ...) survives sudo's secure_path; kept out of the f-string below,
+    # which cannot hold a backslash-escaped quote.
+    setup_cmd = cmd('sudo "$(which teleimager-server)" --setup-service')
 
     guide = (
         f"{head('Getting started:')}\n"
@@ -2562,6 +2638,9 @@ def main():
         f"  {head('Step 4')} — Receive the streams:\n"
         f"      {flag('ZMQ')}    : {cmd('teleimager-client --host <server_ip>')}\n"
         f"      {flag('WebRTC')} : open {url('https://<server_ip>:<webrtc_port>')} in a browser\n"
+        "\n"
+        f"  {head('Step 5')} — Optional: run it as a service, so it comes up on every boot:\n"
+        f"      {setup_cmd}"
     )
     parser = argparse.ArgumentParser(
         description="TeleImager: Unitree multi-camera image streaming service.",
@@ -2569,7 +2648,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--setup-permissions', action='store_true', help='Grant camera access to non-root users (run once with sudo), then exit. Installs a udev rule, adds you to the video group, and allows the driver reload without a password.')
-    parser.add_argument('--user', default=None, metavar='USER', help='(with --setup-permissions) Grant camera access to this account instead of $SUDO_USER. Needed from a root shell (`sudo su -`), where $SUDO_USER is unset.')
+    parser.add_argument('--setup-service', action='store_true', help='Install and enable a systemd unit that starts this server on boot (run once with sudo), then exit. Serves the config already set up in ~/.config/teleimager.')
+    parser.add_argument('--user', default=None, metavar='USER', help='(with --setup-permissions or --setup-service) Grant camera access / run the boot service as this account instead of $SUDO_USER. Needed from a root shell (`sudo su -`), where $SUDO_USER is unset.')
     parser.add_argument('--cf', action='store_true', help='Camera-finder mode: scan and print all connected cameras, then exit.')
     parser.add_argument('--uvc', action='store_true', help='In --cf, include the UVC (libuvc -> pyuvc) backend in the scan.')
     parser.add_argument('--v4l2', action='store_true', help='In --cf, include the V4L2 (PyAV) backend in the scan.')
@@ -2586,6 +2666,8 @@ def main():
     # reads the server config or pins CPU affinity.
     if args.setup_permissions:
         sys.exit(setup_permissions(args.user))
+    if args.setup_service:
+        sys.exit(setup_service(args.user))
 
     global CERT_PEM_PATH, KEY_PEM_PATH
     # --cert / --key override the defaults alongside the server yaml.

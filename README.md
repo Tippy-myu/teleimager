@@ -119,12 +119,12 @@ A *backend* is the capture driver TeleImager uses to talk to a camera. They're l
 Pick your backend (swap the `[server]` below for the matching extra), then choose one of two ways to install:
 
 ```bash
-# Option 1 — from source (recommended): also gets setup_autostart.sh and WebRTC assets
+# Option 1 — from source (recommended)
 git clone https://github.com/unitreerobotics/teleimager.git
 cd teleimager
 pip install -e ".[server]"        # e.g. ".[uvc]", ".[all]"
 
-# Option 2 — from PyPI (when you don't need the helper scripts)
+# Option 2 — from PyPI
 pip install "teleimager[server]"  # e.g. "teleimager[uvc]", "teleimager[all]"
 ```
 
@@ -268,11 +268,15 @@ Useful flags: `--config <path>` (or `$TELEIMAGER_CONFIG`) to point at another co
 
 ### 2.3 Auto-start on boot
 
-Once everything is verified, you can optionally install it as a [boot service](https://github.com/unitreerobotics/teleimager/blob/main/setup_autostart.sh):
+Once everything is verified, you can install it as a systemd service so it starts with the machine:
 
 ```bash
-bash setup_autostart.sh        # follow the prompts
+sudo "$(which teleimager-server)" --setup-service
 ```
+
+It writes `teleimager.service` to `/etc/systemd/system`, pins it to the interpreter that ran the command and to your account (via `$SUDO_USER`), and enables it right away. The service reads the config you have already set up at `~/.config/teleimager/teleimager_server.yaml` — edit that file, then `sudo systemctl restart teleimager.service`. From a root shell (`sudo su -`), add `--user <name>` since `$SUDO_USER` is unset there.
+
+Manage it with `systemctl status / restart / stop / disable teleimager.service`, and follow its log output with `journalctl -u teleimager.service -f`.
 
 ---
 

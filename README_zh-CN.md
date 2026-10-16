@@ -119,12 +119,12 @@ conda activate teleimager
 选好后端（把下面的 `[server]` 换成对应选项），二选一执行安装：
 
 ```bash
-# 方式一：从源码（推荐）——顺带获得辅助脚本 setup_autostart.sh 与 WebRTC 资源
+# 方式一：从源码（推荐）
 git clone https://github.com/unitreerobotics/teleimager.git
 cd teleimager
 pip install -e ".[server]"        # 如 ".[uvc]"、".[all]"
 
-# 方式二：从 PyPI（不需要辅助脚本时）
+# 方式二：从 PyPI
 pip install "teleimager[server]"  # 如 "teleimager[uvc]"、"teleimager[all]"
 ```
 
@@ -268,11 +268,15 @@ teleimager-server
 
 ### 2.3 开机自启动
 
-一切验证无误后，如有需要，可安装为[开机启动服务](https://github.com/unitreerobotics/teleimager/blob/main/setup_autostart.sh)：
+一切验证无误后，可将其安装为 systemd 服务，随机器启动：
 
 ```bash
-bash setup_autostart.sh        # 按提示完成配置
+sudo "$(which teleimager-server)" --setup-service
 ```
+
+它会把 `teleimager.service` 写入 `/etc/systemd/system`，绑定执行该命令的解释器与你的账户（取自 `$SUDO_USER`），并立即启用。服务读取你已经配置好的 `~/.config/teleimager/teleimager_server.yaml`——改完该文件后执行 `sudo systemctl restart teleimager.service`。若在 root shell（`sudo su -`）中执行，需额外加 `--user <名称>`，因为此时 `$SUDO_USER` 为空。
+
+管理命令：`systemctl status / restart / stop / disable teleimager.service`；查看实时日志输出：`journalctl -u teleimager.service -f`。
 
 ---
 
